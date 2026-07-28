@@ -1,0 +1,306 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════
+   1 · BASE — dark sanctum, premium Telugu type system
+   ═══════════════════════════════════════════════════════════════ */
+@layer base {
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: 'Gurajada', 'Noto Sans Telugu', sans-serif;
+    font-style: italic;
+    background: #0a0608;
+    color: #fff;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+/* ── Every Telugu writeup renders in Gurajada Italic ── */
+.font-telugu,
+.font-telugu-serif,
+.font-telugu-classic {
+  font-family: 'Gurajada', 'Noto Sans Telugu', sans-serif;
+  font-style: italic;
+  font-weight: 400;
+}
+/* Devanagari (Hindi shloka + OM) keeps its own regal serif */
+.font-devanagari { font-family: 'Rozha One', serif; font-style: normal; }
+.font-hindi      { font-family: 'Tiro Devanagari Hindi', 'Rozha One', serif; font-style: normal; }
+/* Latin numerals / brand marks stay upright */
+.font-latin      { font-family: 'Rozha One', serif; font-style: normal; }
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #1a0d10; }
+::-webkit-scrollbar-thumb { background: #8B1E2D; border-radius: 2px; }
+
+/* ═══════════════════════════════════════════════════════════════
+   2 · SHARED ATMOSPHERE — grain, bokeh, petals, sparks
+   ═══════════════════════════════════════════════════════════════ */
+.grain-layer {
+  position: absolute; inset: 0; pointer-events: none;
+  opacity: 0.05; mix-blend-mode: overlay; z-index: 4;
+  background-size: 160px 160px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+}
+
+@keyframes bokehFloat {
+  from { transform: translateY(0) scale(1); opacity: 0.18; }
+  to   { transform: translateY(-26px) scale(1.35); opacity: 0.5; }
+}
+.hp-bokeh {
+  position: absolute; z-index: 3; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle, rgba(255, 222, 150, 0.9), rgba(232, 184, 75, 0) 70%);
+  filter: blur(1px); opacity: 0.35;
+  animation: bokehFloat ease-in-out infinite alternate;
+}
+
+@keyframes petalDrop {
+  0%   { transform: translate3d(0, -30px, 0) rotate(0deg); opacity: 0; }
+  8%   { opacity: 0.85; }
+  50%  { transform: translate3d(var(--drift, 10px), 52vh, 0) rotate(170deg); }
+  92%  { opacity: 0.55; }
+  100% { transform: translate3d(0, 108vh, 0) rotate(340deg); opacity: 0; }
+}
+.hp-petal {
+  position: fixed; top: -32px; z-index: 3; pointer-events: none;
+  filter: drop-shadow(0 2px 5px rgba(255, 170, 190, 0.35));
+  animation: petalDrop linear infinite;
+}
+
+/* smaller soft petal (results) */
+@keyframes petalFall {
+  0%   { transform: translateY(-20px) rotate(0deg); opacity: 0; }
+  10%  { opacity: 0.8; }
+  90%  { opacity: 0.6; }
+  100% { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+}
+.petal {
+  position: fixed; font-size: 1.2rem; pointer-events: none; z-index: 0;
+  animation: petalFall linear infinite;
+}
+
+/* real SVG petal — replaces the emoji, scales with font-size */
+.petal-shape { display: block; width: 1em; height: 1em; }
+
+.joy-spark {
+  position: absolute; left: 50%; top: 44%; pointer-events: none;
+  font-size: 1.15rem; z-index: 30; color: #f0cd7a;
+  filter: drop-shadow(0 0 8px rgba(232, 184, 75, 0.65));
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   3 · CAMERA SCANNER
+   ═══════════════════════════════════════════════════════════════ */
+.camera-bg {
+  position: absolute; inset: 0;
+  background-image: url('/images/camera-bg.png');
+  background-size: cover; background-position: center;
+}
+.camera-overlay { position: absolute; inset: 0; background: rgba(8, 4, 6, 0.72); }
+
+/* viewfinder */
+.viewfinder {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1.5px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  position: relative; overflow: hidden;
+  backdrop-filter: blur(2px);
+}
+.vf-corner {
+  position: absolute; width: 28px; height: 28px;
+  border-color: rgba(255, 255, 255, 0.9); border-style: solid;
+}
+.vf-tl { top: 14px; left: 14px;   border-width: 3px 0 0 3px; border-radius: 6px 0 0 0; }
+.vf-tr { top: 14px; right: 14px;  border-width: 3px 3px 0 0; border-radius: 0 6px 0 0; }
+.vf-bl { bottom: 14px; left: 14px;  border-width: 0 0 3px 3px; border-radius: 0 0 0 6px; }
+.vf-br { bottom: 14px; right: 14px; border-width: 0 3px 3px 0; border-radius: 0 0 6px 0; }
+
+.scanning .vf-corner { animation: cornerBreathe 1.1s ease-in-out infinite; }
+@keyframes cornerBreathe { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+
+@keyframes scanLaser {
+  0%   { top: 8%;  opacity: 0.9; }
+  50%  { top: 88%; opacity: 1; }
+  100% { top: 8%;  opacity: 0.9; }
+}
+.scan-laser {
+  position: absolute; left: 6%; right: 6%; height: 2px;
+  background: linear-gradient(90deg, transparent, #E8B84B, #fff, #E8B84B, transparent);
+  box-shadow: 0 0 10px 2px rgba(232, 184, 75, 0.6);
+  animation: scanLaser 2.2s linear infinite; pointer-events: none;
+}
+
+@keyframes guideDrift {
+  0%, 100% { transform: translateY(0); opacity: 0.5; }
+  50%      { transform: translateY(-6px); opacity: 0.85; }
+}
+.guide-drift { animation: guideDrift 3.2s ease-in-out infinite; }
+
+@keyframes livePing {
+  0%   { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.6); }
+  100% { box-shadow: 0 0 0 7px rgba(76, 175, 80, 0); }
+}
+.live-dot { animation: livePing 1.4s ease-out infinite; }
+
+@keyframes capturePulse {
+  0%   { box-shadow: 0 0 0 0 rgba(232, 184, 75, 0.45), 0 10px 30px rgba(139, 30, 45, 0.55); }
+  70%  { box-shadow: 0 0 0 18px rgba(232, 184, 75, 0), 0 10px 30px rgba(139, 30, 45, 0.55); }
+  100% { box-shadow: 0 0 0 0 rgba(232, 184, 75, 0), 0 10px 30px rgba(139, 30, 45, 0.55); }
+}
+.capture-pulse { animation: capturePulse 2.2s ease-out infinite; }
+
+/* mobile-only peek over the frame */
+.vf-wrap { position: relative; }
+.gp-glow {
+  position: absolute; left: 50%; top: 0; transform: translate(-50%, -70%);
+  width: 200px; height: 130px; border-radius: 50%; pointer-events: none; z-index: 4;
+  background: radial-gradient(circle, rgba(232, 184, 75, 0.24) 0%, rgba(232, 184, 75, 0.08) 45%, transparent 72%);
+  filter: blur(8px); animation: gpGlow 4s ease-in-out infinite;
+}
+@keyframes gpGlow { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
+.gp-anchor {
+  position: absolute; left: 50%; top: 0;
+  width: 158px; height: 92px; margin-left: -79px; margin-top: -85px;
+  z-index: 6; pointer-events: none;
+}
+.gp-clip {
+  width: 100%; height: 100%; overflow: hidden;
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 26px rgba(232, 184, 75, 0.28));
+}
+.gp-clip img { width: 158px; height: auto; display: block; }
+.gp-clip::after {
+  content: ''; position: absolute; left: 50%; bottom: -2px; transform: translateX(-50%);
+  width: 78%; height: 8px; border-radius: 6px;
+  background: radial-gradient(ellipse at 50% 0%, rgba(0, 0, 0, 0.4) 0%, transparent 75%);
+  filter: blur(2px);
+}
+.gp-bob { width: 100%; animation: gpBob 5.5s ease-in-out infinite; }
+@keyframes gpBob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+
+/* ═══════════════════════════════════════════════════════════════
+   4 · THINKING COMPANION (scanner right side)
+   ═══════════════════════════════════════════════════════════════ */
+.think-bubble {
+  position: relative;
+  background: rgba(10, 6, 8, 0.66);
+  border: 1px solid rgba(232, 184, 75, 0.3);
+  border-radius: 18px;
+  padding: 12px 16px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+.think-bubble::after {
+  content: ''; position: absolute; right: 26px; bottom: -7px;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: inherit; border: inherit;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  border-bottom: none; border-right: none;
+}
+.think-bubble::before {
+  content: ''; position: absolute; right: 16px; bottom: -14px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: rgba(232, 184, 75, 0.35);
+}
+@keyframes dotPulse {
+  0%, 100% { transform: translateY(0); opacity: 0.4; }
+  50%      { transform: translateY(-4px); opacity: 1; }
+}
+.think-dot {
+  width: 5px; height: 5px; border-radius: 50%; background: #E8B84B;
+  animation: dotPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes floatGlyph {
+  0%   { transform: translateY(0) scale(0.8); opacity: 0; }
+  20%  { opacity: 0.9; }
+  100% { transform: translateY(-70px) scale(1.15); opacity: 0; }
+}
+.float-glyph {
+  position: absolute; pointer-events: none; font-size: 1rem;
+  filter: drop-shadow(0 0 6px rgba(232, 184, 75, 0.5));
+  animation: floatGlyph 3.2s ease-out infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   5 · RESULTS
+   ═══════════════════════════════════════════════════════════════ */
+.loading-bg { background: radial-gradient(ellipse at 50% 30%, #1a0a0e 0%, #080406 100%); }
+
+@keyframes spinRing { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+@keyframes celebrateRing {
+  0%   { transform: scale(0.6); opacity: 0.7; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+.celebrate-ring {
+  position: absolute; left: 50%; top: 50%;
+  width: 220px; height: 220px; margin: -110px 0 0 -110px;
+  border-radius: 50%; pointer-events: none;
+  border: 2px solid rgba(232, 184, 75, 0.4);
+  animation: celebrateRing 2.4s ease-out infinite;
+}
+
+@media (max-width: 640px) {
+  .gp-anchor { width: 116px; height: 68px; margin-left: -58px; margin-top: -61px; }
+  .gp-clip img { width: 116px; }
+  .gp-glow { width: 150px; height: 100px; }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   6 · LUXURY DETAILS — kolam borders, gold button life, dock glow
+   ═══════════════════════════════════════════════════════════════ */
+/* traditional kolam / rangoli repeating strip */
+.kolam-strip {
+  height: 10px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='44' height='10' viewBox='0 0 44 10'%3E%3Cg fill='none' stroke='%23E8B84B' stroke-width='0.9'%3E%3Cpath d='M22 0.8 L27.5 5 L22 9.2 L16.5 5 Z'/%3E%3Cpath d='M0 5 h12 M32 5 h12' opacity='0.5'/%3E%3C/g%3E%3Ccircle cx='22' cy='5' r='1.1' fill='%23E8B84B'/%3E%3Ccircle cx='0' cy='5' r='0.9' fill='%23E8B84B' opacity='0.6'/%3E%3Ccircle cx='44' cy='5' r='0.9' fill='%23E8B84B' opacity='0.6'/%3E%3C/svg%3E");
+  background-repeat: repeat-x;
+  background-position: center;
+  opacity: 0.5;
+}
+
+/* gold ring expansion on dock buttons */
+.dock-ring { position: relative; }
+.dock-ring::after {
+  content: '';
+  position: absolute; inset: -3px; border-radius: inherit;
+  border: 1px solid rgba(232, 184, 75, 0);
+  transition: border-color 0.3s ease, inset 0.3s ease;
+  pointer-events: none;
+}
+.group:hover .dock-ring::after {
+  border-color: rgba(232, 184, 75, 0.55);
+  inset: -5px;
+}
+
+/* CTA icon nudge */
+.cta:hover .cta-inner svg { transform: translateX(2px) rotate(-10deg); }
+.cta-inner svg { transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+/* gold keyline */
+.gold-keyline {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(232, 184, 75, 0.55) 20%, rgba(255, 233, 173, 0.85) 50%, rgba(232, 184, 75, 0.55) 80%, transparent);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   7 · ACCESSIBILITY — calm the temple for motion-sensitive guests
+   ═══════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  .hp-petal, .hp-bokeh, .petal,
+  .ganesha-float, .glow, .deity-rays, .hp-rays,
+  .gp-bob, .om-ring-a, .om-ring-b, .om-ticks, .om-halo,
+  .scan-laser, .capture-pulse, .celebrate-ring, .float-glyph {
+    animation: none !important;
+  }
+  .hp-parallax, .ganesha-tilt { transform: none !important; }
+  .scroll-cue-dot, .arch-card, .value-cell { animation: none !important; transition: none !important; }
+  html { scroll-behavior: auto !important; }
+  * { scroll-behavior: auto; }
+}
+
+/* smooth anchored scrolling for the storytelling flow */
+html { scroll-behavior: smooth; }
