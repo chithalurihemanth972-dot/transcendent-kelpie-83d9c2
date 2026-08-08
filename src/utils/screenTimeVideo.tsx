@@ -56,6 +56,30 @@ const STORAGE_KEYS = (prefix: string) => ({
   playedGt5h: `${prefix}:played:gt5h`,
 });
 
+// Try a list of candidate URLs and return the first that the server responds OK to.
+async function findFirstExisting(candidates: string[]): Promise<string | undefined> {
+  for (const url of candidates) {
+    try {
+      // First try HEAD — quick and lightweight
+      const res = await fetch(url, { method: 'HEAD', cache: 'no-cache' });
+      if (res && res.ok) return url;
+    } catch (e) {
+      // If HEAD fails (some hosts block it), try a small GET using Range to avoid full download
+      try {
+        const r = await fetch(url, {
+          method: 'GET',
+          headers: { Range: 'bytes=0-0' },
+          cache: 'no-cache',
+        });
+        if (r && (r.ok || r.status === 206)) return url;
+      } catch (e2) {
+        // ignore and continue
+      }
+    }
+  }
+  return undefined;
+}
+
 /* --- Overlay React component --- */
 function VideoOverlay({
   src,
@@ -199,7 +223,8 @@ export function initScreenTimeVideo(userConfig?: VideoConfig) {
 
     if (elapsed >= secs(5) && !playedGt5) {
       try {
-        await showVideo(config.videoGt5h);
+        const src = (await findFirstExisting([config.videoGt5h, config.videoGt5h + '.mp4'])) || config.videoGt5h;
+        await showVideo(src);
       } catch {}
       setPlayed(keys.playedGt5h);
       return;
@@ -211,7 +236,8 @@ export function initScreenTimeVideo(userConfig?: VideoConfig) {
       const exactWindowEnd = secs(3) + config.exact3hWindowSec;
       if (!played3hExact && elapsed >= secs(3) && elapsed < exactWindowEnd) {
         try {
-          await showVideo(config.videoAt3h);
+          const src = (await findFirstExisting([config.videoAt3h, config.videoAt3h + '.mp4'])) || config.videoAt3h;
+          await showVideo(src);
         } catch {}
         setPlayed(keys.played3hExact);
         return;
@@ -220,7 +246,8 @@ export function initScreenTimeVideo(userConfig?: VideoConfig) {
       // If exact missed, but not yet played 3-5h
       if (!played3to5) {
         try {
-          await showVideo(config.video3to5h);
+          const src = (await findFirstExisting([config.video3to5h, config.video3to5h + '.mp4'])) || config.video3to5h;
+          await showVideo(src);
         } catch {}
         setPlayed(keys.played3to5h);
         return;
@@ -281,15 +308,18 @@ export function initScreenTimeVideo(userConfig?: VideoConfig) {
       localStorage.removeItem(keys.playedGt5h);
     },
     play3hExact: async () => {
-      await showVideo(config.videoAt3h);
+      const src = (await findFirstExisting([config.videoAt3h, config.videoAt3h + '.mp4'])) || config.videoAt3h;
+      await showVideo(src);
       setPlayed(keys.played3hExact);
     },
     play3to5h: async () => {
-      await showVideo(config.video3to5h);
+      const src = (await findFirstExisting([config.video3to5h, config.video3to5h + '.mp4'])) || config.video3to5h;
+      await showVideo(src);
       setPlayed(keys.played3to5h);
     },
     playGt5h: async () => {
-      await showVideo(config.videoGt5h);
+      const src = (await findFirstExisting([config.videoGt5h, config.videoGt5h + '.mp4'])) || config.videoGt5h;
+      await showVideo(src);
       setPlayed(keys.playedGt5h);
     },
   };
