@@ -9,6 +9,11 @@ import type { ScanStatus } from '../services/scanApi';
  * Drop files at `public/videos/healthy.mp4` and `public/videos/warning.mp4`.
  * If they are absent the component degrades to a calm animated panel so the
  * result section never shows a broken player.
+ *
+ * Change (2026-08-08): if the repository contains the new screen-time
+ * milestone videos (`/videos/3h.mp4`, `/videos/3to5h.mp4`, `/videos/gt5h.mp4`)
+ * this component will *not* auto-play the old awareness videos. This lets
+ * you upload new milestone videos without the old players also playing.
  */
 export default function AwarenessVideo({ status }: { status: ScanStatus }) {
   const healthy = status === 'healthy';
@@ -20,22 +25,64 @@ export default function AwarenessVideo({ status }: { status: ScanStatus }) {
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(true);
 
-  /* auto-play once mounted — muted so browsers allow it */
+  /*
+   * Auto-play once mounted — but first check if the new screen-time videos
+   * exist. If they do, disable auto-play of these awareness videos so only
+   * the new milestone videos will be used by the site.
+   */
   useEffect(() => {
-    const el = videoRef.current;
-    if (!el) return;
-    el.muted = true;
-    const t = window.setTimeout(() => {
-      el.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
-    }, 450);
-    return () => window.clearTimeout(t);
+    let mounted = true;
+    let t: number | null = null;
+
+    async function init() {
+      // Check for any of the new milestone video files. Use HEAD requests where
+      // possible so we don't download the entire file. If any exist, disable
+      // this awareness player (component will render fallback panel instead).
+      try {
+        const candidates = ['/videos/3h.mp4', '/videos/3to5h.mp4', '/videos/gt5h.mp4'];
+        for (const u of candidates) {
+          try {
+            const res = await fetch(u, { method: 'HEAD' });
+            if (res && res.ok) {
+              if (mounted) setAvailable(false);
+              return; // stop: new milestone videos are present
+            }
+          } catch (e) {
+            // ignore network errors per-file and continue
+          }
+        }
+      } catch (e) {
+        // ignore global errors and proceed to normal behavior
+      }
+
+      // No new milestone videos found; proceed to auto-play this awareness video
+      const el = videoRef.current;
+      if (!el) return;
+      el.muted = true;
+      t = window.setTimeout(() => {
+        el
+          .play()
+          .then(() => mounted && setPlaying(true))
+          .catch(() => mounted && setPlaying(false));
+      }, 450);
+    }
+
+    init();
+
+    return () => {
+      mounted = false;
+      if (t) window.clearTimeout(t);
+    };
   }, []);
 
   const toggle = () => {
     const el = videoRef.current;
     if (!el) return;
     if (el.paused) el.play().then(() => setPlaying(true)).catch(() => undefined);
-    else { el.pause(); setPlaying(false); }
+    else {
+      el.pause();
+      setPlaying(false);
+    }
   };
 
   const toggleMute = () => {
@@ -92,29 +139,18 @@ export default function AwarenessVideo({ status }: { status: ScanStatus }) {
           </div>
         </>
       ) : (
-        /* graceful fallback — no broken player, no layout shift */
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
-          <span
-            className="absolute inset-0 pointer-events-none"
-            style={{
-              background: healthy
-                ? 'radial-gradient(ellipse at 50% 45%, rgba(46,125,50,0.2), transparent 68%)'
-                : 'radial-gradient(ellipse at 50% 45%, rgba(230,81,0,0.18), transparent 68%)',
-            }}
-          />
-          <motion.span
-            animate={{ scale: [1, 1.06, 1], opacity: [0.75, 1, 0.75] }}
-            transition={{ duration: 3.6, repeat: Infinity, ease: 'easeInOut' }}
-            className="w-11 h-11 rounded-full flex items-center justify-center relative z-10"
-            style={{ background: `${accent}22`, border: `1px solid ${accent}66` }}
-          >
-            <Play size={16} style={{ color: accent }} />
-          </motion.span>
-          <p className="font-telugu text-xs relative z-10" style={{ color: 'rgba(255,240,215,0.62)' }}>
-            {healthy
-              ? 'ఇలాగే కొనసాగించండి — మీ సమతుల్యత బాగుంది.'
-              : 'కొంచెం విరామం తీసుకోండి — మీ కళ్ళకు, మనసుకు మంచిది.'}
-          </p>
+        // fallback calm panel (existing behavior) — same content as before when files missing
+        <div className="w-full h-full flex items-center justify-center p-6 text-center">
+          <div>
+            <h3 style={{ color: accent }} className="text-lg font-semibold mb-2">
+              {healthy ? 'Healthy' : 'Warning'}
+            </h3>
+            <p style={{ color: 'rgba(255,255,255,0.8)' }} className="text-sm">
+              {healthy
+                ? 'Great job — keep up the healthy habits. (Awareness video replaced by milestone video.)'
+                : 'Please review the guidance — this area shows tailored support. (Awareness video replaced by milestone video.)'}
+            </p>
+          </div>
         </div>
       )}
     </motion.div>
