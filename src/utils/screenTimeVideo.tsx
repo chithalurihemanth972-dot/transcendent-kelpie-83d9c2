@@ -1,54 +1,79 @@
 import React from 'react';
-import { createRoot } from 'react-dom/client';
+import { createRoot, type Root } from 'react-dom/client';
 
 /**
- * Screen-time video player
+ * Screen-Time Milestone Video System
  *
- * - Tracks visible screen time (seconds) while the page is visible.
- * - Persists elapsed seconds in localStorage under key 'screenTimeSeconds'.
- * - When thresholds are reached, plays the configured video in a full-screen overlay
- *   and marks that milestone as played in localStorage to avoid repeated replay.
+ * Videos:
+ *   < 3h      -> no automatic milestone video
+ *   3h        -> /videos/3h.mp4
+ *   3h–5h     -> /videos/3to5h.mp4
+ *   > 5h      -> /videos/gt5h.mp4
  *
- * Configuration:
- * - Edit `DEFAULT_CONFIG` or pass a config to initScreenTimeVideo.
+ * Videos must exist at:
  *
- * Integration:
- * - Import this module from your app entrypoint (e.g., src/index.tsx)
- *   import { initScreenTimeVideo } from './utils/screenTimeVideo';
- *   initScreenTimeVideo();
+ * public/videos/3h.mp4
+ * public/videos/3to5h.mp4
+ * public/videos/gt5h.mp4
  *
- * Notes:
- * - Videos are muted by default to allow autoplay; README explains user interaction for audio.
+ * This module:
+ * - Tracks visible screen time.
+ * - Persists screen time in localStorage.
+ * - Automatically triggers milestone videos.
+ * - Exposes window.__screenTimeVideoAPI for manual playback.
+ * - Prevents duplicate initialization.
+ * - Prevents duplicate milestone playback.
  */
 
-/* --- Types --- */
 type VideoConfig = {
-  // URL or path to the video files (relative to site root or absolute URL)
-  videoAt3h?: string; // exact 3h play (short window)
-  video3to5h?: string; // 3-5h window video
-  videoGt5h?: string; // >5h video
-  // Seconds to consider "exact 3h" window (default 60 seconds)
+  videoAt3h?: string;
+  video3to5h?: string;
+  videoGt5h?: string;
+
   exact3hWindowSec?: number;
-  // LocalStorage key prefix
+
   storagePrefix?: string;
-  // Allow disabling auto-play (module still tracks time)
+
   autoplayEnabled?: boolean;
-  // Overlay z-index (default high)
+
   overlayZIndex?: number;
 };
+
+type ScreenTimeVideoAPI = {
+  getElapsed: () => number;
+
+  resetElapsed: () => void;
+
+  play3hExact: () => Promise<void>;
+
+  play3to5h: () => Promise<void>;
+
+  playGt5h: () => Promise<void>;
+};
+
+declare global {
+  interface Window {
+    __screenTimeVideoAPI?: ScreenTimeVideoAPI;
+  }
+}
 
 const DEFAULT_CONFIG: Required<VideoConfig> = {
   videoAt3h: '/videos/3h.mp4',
   video3to5h: '/videos/3to5h.mp4',
   videoGt5h: '/videos/gt5h.mp4',
+
+  // 60-second window after exactly 3 hours.
   exact3hWindowSec: 60,
+
   storagePrefix: 'screenTimeVideo',
+
   autoplayEnabled: true,
+
   overlayZIndex: 999999,
 };
 
-/* --- Helpers --- */
-const secs = (h: number) => h * 3600;
+const secondsForHours = (hours: number) => hours * 60 * 60;
+
 const STORAGE_KEYS = (prefix: string) => ({
   seconds: `${prefix}:seconds`,
   played3hExact: `${prefix}:played:3h_exact`,
@@ -56,31 +81,89 @@ const STORAGE_KEYS = (prefix: string) => ({
   playedGt5h: `${prefix}:played:gt5h`,
 });
 
-// Try a list of candidate URLs and return the first that the server responds OK to.
-async function findFirstExisting(candidates: string[]): Promise<string | undefined> {
+/**
+ * Build clean candidate URLs.
+ *
+ * We intentionally do NOT create:
+ *
+ * /videos/3h.mp4.mp4
+ *
+ * because your actual files are:
+ *
+ * /videos/3h.mp4
+ * /videos/3to5h.mp4
+ * /videos/gt5h.mp4
+ */
+function getCandidates(url: string): string[] {
+  const clean = url.trim();
+
+  if (!clean) {
+    return [];
+  }
+
+  const candidates = [clean];
+
+  if (!clean.toLowerCase().endsWith('.mp4')) {
+    candidates.push(`${clean}.mp4`);
+  }
+
+  return [...new Set(candidates)];
+}
+
+/**
+ * Verify that the video exists.
+ *
+ * First try HEAD.
+ * If HEAD is unavailable or returns a non-success response,
+ * try a tiny Range GET request.
+ */
+async function findFirstExisting(
+  candidates: string[],
+): Promise<string | undefined> {
   for (const url of candidates) {
+    // ------------------------------------------------------------
+    // 1. HEAD request
+    // ------------------------------------------------------------
     try {
-      // First try HEAD — quick and lightweight
-      const res = await fetch(url, { method: 'HEAD', cache: 'no-cache' });
-      if (res && res.ok) return url;
-    } catch (e) {
-      // If HEAD fails (some hosts block it), try a small GET using Range to avoid full download
-      try {
-        const r = await fetch(url, {
-          method: 'GET',
-          headers: { Range: 'bytes=0-0' },
-          cache: 'no-cache',
-        });
-        if (r && (r.ok || r.status === 206)) return url;
-      } catch (e2) {
-        // ignore and continue
+      const response = await fetch(url, {
+        method: 'HEAD',
+        cache: 'no-store',
+      });
+
+      if (response.ok) {
+        return url;
       }
+    } catch {
+      // Continue to Range GET.
+    }
+
+    // ------------------------------------------------------------
+    // 2. Range GET fallback
+    // ------------------------------------------------------------
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Range: 'bytes=0-0',
+        },
+        cache: 'no-store',
+      });
+
+      if (response.ok || response.status === 206) {
+        return url;
+      }
+    } catch {
+      // Try next candidate.
     }
   }
+
   return undefined;
 }
 
-/* --- Overlay React component --- */
+/* ================================================================
+   VIDEO OVERLAY
+================================================================ */
+
 function VideoOverlay({
   src,
   onClose,
@@ -92,257 +175,712 @@ function VideoOverlay({
   zIndex: number;
   autoplay: boolean;
 }) {
-  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const [videoError, setVideoError] = React.useState(false);
+
   React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [onClose]);
 
   return (
     <div
-      ref={containerRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Screen-time awareness video"
+      onClick={(event) => {
+        // Only close when clicking the backdrop itself.
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'black',
+        zIndex,
+
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        zIndex,
+
+        padding: '24px',
+
+        background:
+          'rgba(0, 0, 0, 0.94)',
+
+        backdropFilter: 'blur(10px)',
+        WebkitBackdropFilter: 'blur(10px)',
       }}
-      aria-hidden={false}
     >
-      <video
-        src={src}
-        style={{ maxWidth: '100%', maxHeight: '100%' }}
-        controls
-        autoPlay={autoplay}
-        muted={autoplay} // muted for autoplay reliability
-        playsInline
-        onEnded={onClose}
-      />
-      {/* Clicking outside the video closes */}
-      <div
+      {!videoError ? (
+        <video
+          src={src}
+          controls
+          autoPlay={autoplay}
+          muted={autoplay}
+          playsInline
+          preload="auto"
+          onEnded={onClose}
+          onError={() => {
+            console.error(
+              '[ScreenTimeVideo] Video failed to load:',
+              src,
+            );
+
+            setVideoError(true);
+          }}
+          style={{
+            position: 'relative',
+            zIndex: zIndex + 1,
+
+            width: 'min(1100px, 100%)',
+            maxHeight: 'calc(100vh - 48px)',
+
+            display: 'block',
+
+            borderRadius: '16px',
+
+            background: '#000',
+
+            boxShadow:
+              '0 30px 100px rgba(0,0,0,0.65)',
+          }}
+        />
+      ) : (
+        <div
+          style={{
+            position: 'relative',
+            zIndex: zIndex + 1,
+
+            width: 'min(520px, 100%)',
+
+            padding: '28px',
+
+            borderRadius: '18px',
+
+            textAlign: 'center',
+
+            color: '#ffe9ad',
+
+            background:
+              'linear-gradient(145deg, #241416, #12090b)',
+
+            border:
+              '1px solid rgba(232,184,75,0.28)',
+          }}
+        >
+          <div
+            style={{
+              fontSize: '18px',
+              fontWeight: 700,
+              marginBottom: '10px',
+            }}
+          >
+            Awareness video unavailable
+          </div>
+
+          <div
+            style={{
+              fontSize: '13px',
+              color: 'rgba(255,255,255,0.65)',
+              marginBottom: '20px',
+            }}
+          >
+            Please verify that the video exists at:
+          </div>
+
+          <code
+            style={{
+              display: 'block',
+              marginBottom: '20px',
+              color: '#ffb4a5',
+              wordBreak: 'break-word',
+            }}
+          >
+            {src}
+          </code>
+
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              border: 'none',
+              borderRadius: '999px',
+              padding: '10px 20px',
+              background: '#ffe9ad',
+              color: '#231f1b',
+              fontWeight: 700,
+              cursor: 'pointer',
+            }}
+          >
+            Close
+          </button>
+        </div>
+      )}
+
+      {/* Close button */}
+      <button
+        type="button"
         onClick={onClose}
+        aria-label="Close video"
         style={{
-          position: 'absolute',
-          inset: 0,
+          position: 'fixed',
+          top: '18px',
+          right: '18px',
+          zIndex: zIndex + 2,
+
+          width: '42px',
+          height: '42px',
+
+          borderRadius: '50%',
+          border:
+            '1px solid rgba(255,255,255,0.2)',
+
+          background:
+            'rgba(20,10,12,0.82)',
+
+          color: '#fff',
+
+          fontSize: '24px',
+          lineHeight: 1,
+
+          cursor: 'pointer',
         }}
-      />
+      >
+        ×
+      </button>
     </div>
   );
 }
 
-/* --- Core init function --- */
-export function initScreenTimeVideo(userConfig?: VideoConfig) {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return;
-  const config = { ...DEFAULT_CONFIG, ...(userConfig || {}) };
+/* ================================================================
+   INITIALIZATION
+================================================================ */
+
+let cleanupInstance: (() => void) | null = null;
+
+export function initScreenTimeVideo(
+  userConfig?: VideoConfig,
+) {
+  // --------------------------------------------------------------
+  // Browser guard
+  // --------------------------------------------------------------
+  if (
+    typeof window === 'undefined' ||
+    typeof document === 'undefined'
+  ) {
+    return;
+  }
+
+  // --------------------------------------------------------------
+  // Prevent duplicate initialization
+  // --------------------------------------------------------------
+  if (cleanupInstance) {
+    return cleanupInstance;
+  }
+
+  const config: Required<VideoConfig> = {
+    ...DEFAULT_CONFIG,
+    ...(userConfig ?? {}),
+  };
+
   const keys = STORAGE_KEYS(config.storagePrefix);
 
-  // Read stored seconds, fallback to zero
-  let elapsed = parseInt(localStorage.getItem(keys.seconds) || '0', 10) || 0;
+  // --------------------------------------------------------------
+  // Stored screen time
+  // --------------------------------------------------------------
+  let elapsed =
+    Number.parseInt(
+      localStorage.getItem(keys.seconds) ?? '0',
+      10,
+    ) || 0;
+
   let ticking = false;
+
   let tickHandle: number | null = null;
 
-  // Ensure flags exist (boolean stored as '1')
-  const playedFlag = (k: string) => localStorage.getItem(k) === '1';
-  const setPlayed = (k: string) => localStorage.setItem(k, '1');
+  let thresholdCheckRunning = false;
 
-  const saveSeconds = () => localStorage.setItem(keys.seconds, String(elapsed));
+  let activeOverlayCleanup: (() => void) | null = null;
 
-  // Overlay mount helper
-  const showVideo = (src: string) =>
-    new Promise<void>((resolve) => {
-      if (!config.autoplayEnabled) {
-        // Do not auto open if disabled; caller can open via UI if desired.
-        resolve();
-        return;
-      }
-      const overlayRoot = document.createElement('div');
-      overlayRoot.setAttribute('data-screen-time-video', '1');
-      document.body.appendChild(overlayRoot);
+  // --------------------------------------------------------------
+  // Storage helpers
+  // --------------------------------------------------------------
+  const isPlayed = (key: string) =>
+    localStorage.getItem(key) === '1';
 
-      // createRoot requires container not to have children on initial call
-      // Using React 18 createRoot if available
-      try {
-        const root = createRoot(overlayRoot);
-        const cleanup = () => {
-          try {
-            root.unmount();
-          } catch (e) {
-            // ignore
-          }
-          if (overlayRoot.parentNode) overlayRoot.parentNode.removeChild(overlayRoot);
-        };
-        root.render(
-          React.createElement(VideoOverlay, {
-            src,
-            onClose: () => {
-              cleanup();
-              resolve();
-            },
-            zIndex: config.overlayZIndex,
-            autoplay: config.autoplayEnabled,
-          })
-        );
-      } catch (err) {
-        // Fallback: minimal DOM video insertion (no React)
-        const v = document.createElement('video');
-        v.src = src;
-        v.controls = true;
-        v.autoplay = config.autoplayEnabled;
-        v.muted = config.autoplayEnabled;
-        v.style.maxWidth = '100%';
-        v.style.maxHeight = '100%';
-        const overlay = document.createElement('div');
-        overlay.style.position = 'fixed';
-        overlay.style.inset = '0';
-        overlay.style.background = 'black';
-        overlay.style.display = 'flex';
-        overlay.style.alignItems = 'center';
-        overlay.style.justifyContent = 'center';
-        overlay.style.zIndex = String(config.overlayZIndex);
-        overlay.appendChild(v);
-        document.body.appendChild(overlay);
-        v.addEventListener('ended', () => {
-          if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
-          resolve();
-        });
-      }
-    });
+  const markPlayed = (key: string) =>
+    localStorage.setItem(key, '1');
 
-  // Decide and trigger which video to play when thresholds met
-  const checkThresholds = async () => {
-    // priority: GT 5h > 3-5h > exact 3h
-    const playedGt5 = playedFlag(keys.playedGt5h);
-    const played3to5 = playedFlag(keys.played3to5h);
-    const played3hExact = playedFlag(keys.played3hExact);
+  const saveElapsed = () =>
+    localStorage.setItem(
+      keys.seconds,
+      String(elapsed),
+    );
 
-    if (elapsed >= secs(5) && !playedGt5) {
-      try {
-        const src = (await findFirstExisting([config.videoGt5h, config.videoGt5h + '.mp4'])) || config.videoGt5h;
-        await showVideo(src);
-      } catch {}
-      setPlayed(keys.playedGt5h);
+  /* ==============================================================
+     SHOW VIDEO
+  ============================================================== */
+
+  const showVideo = async (
+    src: string,
+  ): Promise<void> => {
+    if (!config.autoplayEnabled) {
       return;
     }
 
-    // elapsed in [3h, 5h)
-    if (elapsed >= secs(3) && elapsed < secs(5)) {
-      // Try exact 3h first if within small window
-      const exactWindowEnd = secs(3) + config.exact3hWindowSec;
-      if (!played3hExact && elapsed >= secs(3) && elapsed < exactWindowEnd) {
-        try {
-          const src = (await findFirstExisting([config.videoAt3h, config.videoAt3h + '.mp4'])) || config.videoAt3h;
-          await showVideo(src);
-        } catch {}
-        setPlayed(keys.played3hExact);
-        return;
-      }
-
-      // If exact missed, but not yet played 3-5h
-      if (!played3to5) {
-        try {
-          const src = (await findFirstExisting([config.video3to5h, config.video3to5h + '.mp4'])) || config.video3to5h;
-          await showVideo(src);
-        } catch {}
-        setPlayed(keys.played3to5h);
-        return;
-      }
+    // Prevent two fullscreen videos at once.
+    if (activeOverlayCleanup) {
+      return;
     }
+
+    return new Promise<void>((resolve) => {
+      const overlayRoot =
+        document.createElement('div');
+
+      overlayRoot.setAttribute(
+        'data-screen-time-video',
+        '1',
+      );
+
+      document.body.appendChild(
+        overlayRoot,
+      );
+
+      let root: Root | null = null;
+
+      let closed = false;
+
+      const cleanup = () => {
+        if (closed) {
+          return;
+        }
+
+        closed = true;
+
+        activeOverlayCleanup = null;
+
+        try {
+          root?.unmount();
+        } catch {
+          // Ignore cleanup errors.
+        }
+
+        if (overlayRoot.parentNode) {
+          overlayRoot.parentNode.removeChild(
+            overlayRoot,
+          );
+        }
+
+        resolve();
+      };
+
+      activeOverlayCleanup = cleanup;
+
+      try {
+        root = createRoot(
+          overlayRoot,
+        );
+
+        root.render(
+          React.createElement(
+            VideoOverlay,
+            {
+              src,
+
+              onClose: cleanup,
+
+              zIndex:
+                config.overlayZIndex,
+
+              autoplay:
+                config.autoplayEnabled,
+            },
+          ),
+        );
+      } catch (error) {
+        console.error(
+          '[ScreenTimeVideo] Failed to create video overlay:',
+          error,
+        );
+
+        cleanup();
+      }
+    });
   };
 
-  // Tick when visible
+  /* ==============================================================
+     VIDEO PLAYERS
+  ============================================================== */
+
+  const playVideo = async (
+    videoUrl: string,
+  ) => {
+    const candidates =
+      getCandidates(videoUrl);
+
+    if (!candidates.length) {
+      throw new Error(
+        'No video URL was configured.',
+      );
+    }
+
+    const existing =
+      await findFirstExisting(
+        candidates,
+      );
+
+    if (!existing) {
+      throw new Error(
+        `Video not found. Tried: ${candidates.join(
+          ', ',
+        )}`,
+      );
+    }
+
+    console.info(
+      '[ScreenTimeVideo] Playing:',
+      existing,
+    );
+
+    await showVideo(existing);
+  };
+
+  /* ==============================================================
+     THRESHOLD LOGIC
+  ============================================================== */
+
+  const checkThresholds =
+    async () => {
+      // Prevent overlapping async threshold checks.
+      if (thresholdCheckRunning) {
+        return;
+      }
+
+      thresholdCheckRunning = true;
+
+      try {
+        const playedGt5 =
+          isPlayed(
+            keys.playedGt5h,
+          );
+
+        const played3to5 =
+          isPlayed(
+            keys.played3to5h,
+          );
+
+        const played3hExact =
+          isPlayed(
+            keys.played3hExact,
+          );
+
+        // --------------------------------------------------------
+        // > 5 HOURS
+        // --------------------------------------------------------
+        if (
+          elapsed >=
+            secondsForHours(5) &&
+          !playedGt5
+        ) {
+          try {
+            await playVideo(
+              config.videoGt5h,
+            );
+
+            markPlayed(
+              keys.playedGt5h,
+            );
+          } catch (error) {
+            console.error(
+              '[ScreenTimeVideo] >5h video failed:',
+              error,
+            );
+          }
+
+          return;
+        }
+
+        // --------------------------------------------------------
+        // 3–5 HOURS
+        // --------------------------------------------------------
+        if (
+          elapsed >=
+            secondsForHours(3)
+        ) {
+          const exact3hEnd =
+            secondsForHours(3) +
+            config.exact3hWindowSec;
+
+          // Exact 3-hour window.
+          if (
+            !played3hExact &&
+            elapsed < exact3hEnd
+          ) {
+            try {
+              await playVideo(
+                config.videoAt3h,
+              );
+
+              markPlayed(
+                keys.played3hExact,
+              );
+            } catch (error) {
+              console.error(
+                '[ScreenTimeVideo] 3h video failed:',
+                error,
+              );
+            }
+
+            return;
+          }
+
+          // Exact 3h window missed.
+          if (
+            !played3to5 &&
+            elapsed <
+              secondsForHours(5)
+          ) {
+            try {
+              await playVideo(
+                config.video3to5h,
+              );
+
+              markPlayed(
+                keys.played3to5h,
+              );
+            } catch (error) {
+              console.error(
+                '[ScreenTimeVideo] 3–5h video failed:',
+                error,
+              );
+            }
+
+            return;
+          }
+        }
+      } finally {
+        thresholdCheckRunning = false;
+      }
+    };
+
+  /* ==============================================================
+     TIMER
+  ============================================================== */
+
   const tick = async () => {
     elapsed += 1;
-    saveSeconds();
-    // Every tick check thresholds (cheap)
+
+    saveElapsed();
+
     await checkThresholds();
   };
 
-  const startTicking = () => {
-    if (ticking) return;
-    ticking = true;
-    // Use setInterval 1s
-    tickHandle = window.setInterval(() => {
-      tick().catch(() => {});
-    }, 1000);
-  };
-  const stopTicking = () => {
-    ticking = false;
-    if (tickHandle !== null) {
-      clearInterval(tickHandle);
-      tickHandle = null;
-    }
-  };
+  const startTicking =
+    () => {
+      if (ticking) {
+        return;
+      }
 
-  // Visibility + focus/blur handling: count time only when document.visible
-  const handleVisibility = () => {
-    if (document.visibilityState === 'visible') {
-      startTicking();
-    } else {
-      stopTicking();
-    }
-  };
+      ticking = true;
 
-  document.addEventListener('visibilitychange', handleVisibility, false);
-  window.addEventListener('focus', handleVisibility, false);
-  window.addEventListener('blur', handleVisibility, false);
+      tickHandle =
+        window.setInterval(() => {
+          tick().catch((error) => {
+            console.error(
+              '[ScreenTimeVideo] Tick error:',
+              error,
+            );
+          });
+        }, 1000);
+    };
 
-  // start if visible now
-  if (document.visibilityState === 'visible') startTicking();
+  const stopTicking =
+    () => {
+      ticking = false;
 
-  // Expose a small control API on window for debugging/manually trigger
-  const apiKey = '__screenTimeVideoAPI';
-  // @ts-expect-error assign
-  window[apiKey] = {
-    getElapsed: () => elapsed,
+      if (
+        tickHandle !== null
+      ) {
+        window.clearInterval(
+          tickHandle,
+        );
+
+        tickHandle = null;
+      }
+    };
+
+  /* ==============================================================
+     VISIBILITY
+  ============================================================== */
+
+  const handleVisibility =
+    () => {
+      if (
+        document.visibilityState ===
+        'visible'
+      ) {
+        startTicking();
+      } else {
+        stopTicking();
+      }
+    };
+
+  document.addEventListener(
+    'visibilitychange',
+    handleVisibility,
+  );
+
+  window.addEventListener(
+    'focus',
+    handleVisibility,
+  );
+
+  window.addEventListener(
+    'blur',
+    handleVisibility,
+  );
+
+  if (
+    document.visibilityState ===
+    'visible'
+  ) {
+    startTicking();
+  }
+
+  /* ==============================================================
+     PUBLIC API
+  ============================================================== */
+
+  const api: ScreenTimeVideoAPI = {
+    getElapsed: () =>
+      elapsed,
+
     resetElapsed: () => {
       elapsed = 0;
-      saveSeconds();
-      localStorage.removeItem(keys.played3hExact);
-      localStorage.removeItem(keys.played3to5h);
-      localStorage.removeItem(keys.playedGt5h);
+
+      saveElapsed();
+
+      localStorage.removeItem(
+        keys.played3hExact,
+      );
+
+      localStorage.removeItem(
+        keys.played3to5h,
+      );
+
+      localStorage.removeItem(
+        keys.playedGt5h,
+      );
+
+      console.info(
+        '[ScreenTimeVideo] Screen time reset.',
+      );
     },
+
     play3hExact: async () => {
-      const src = (await findFirstExisting([config.videoAt3h, config.videoAt3h + '.mp4'])) || config.videoAt3h;
-      await showVideo(src);
-      setPlayed(keys.played3hExact);
+      await playVideo(
+        config.videoAt3h,
+      );
+
+      markPlayed(
+        keys.played3hExact,
+      );
     },
+
     play3to5h: async () => {
-      const src = (await findFirstExisting([config.video3to5h, config.video3to5h + '.mp4'])) || config.video3to5h;
-      await showVideo(src);
-      setPlayed(keys.played3to5h);
+      await playVideo(
+        config.video3to5h,
+      );
+
+      markPlayed(
+        keys.played3to5h,
+      );
     },
+
     playGt5h: async () => {
-      const src = (await findFirstExisting([config.videoGt5h, config.videoGt5h + '.mp4'])) || config.videoGt5h;
-      await showVideo(src);
-      setPlayed(keys.playedGt5h);
+      await playVideo(
+        config.videoGt5h,
+      );
+
+      markPlayed(
+        keys.playedGt5h,
+      );
     },
   };
 
-  // return cleanup function
-  return () => {
-    stopTicking();
-    document.removeEventListener('visibilitychange', handleVisibility);
-    window.removeEventListener('focus', handleVisibility);
-    window.removeEventListener('blur', handleVisibility);
-    try {
-      // @ts-expect-error
-      delete window[apiKey];
-    } catch {}
-  };
-}
+  window.__screenTimeVideoAPI =
+    api;
 
-// Auto-initialize when module is imported, but allow config override by calling initScreenTimeVideo manually afterwards.
-// If you want to avoid auto-init, import the module with a special query or remove the following block and call initScreenTimeVideo explicitly.
-try {
-  // If you don't want auto-init, remove/comment this call and initialize manually in your entrypoint.
-  initScreenTimeVideo();
-} catch (e) {
-  // swallow errors on server-side or unusual environments
-  // console.debug('screenTimeVideo init error', e);
+  console.info(
+    '[ScreenTimeVideo] Initialized successfully.',
+  );
+
+  console.info(
+    '[ScreenTimeVideo] Current elapsed seconds:',
+    elapsed,
+  );
+
+  console.info(
+    '[ScreenTimeVideo] Videos:',
+    {
+      threeHours:
+        config.videoAt3h,
+
+      threeToFive:
+        config.video3to5h,
+
+      greaterThanFive:
+        config.videoGt5h,
+    },
+  );
+
+  /* ==============================================================
+     CLEANUP
+  ============================================================== */
+
+  const cleanup = () => {
+    stopTicking();
+
+    document.removeEventListener(
+      'visibilitychange',
+      handleVisibility,
+    );
+
+    window.removeEventListener(
+      'focus',
+      handleVisibility,
+    );
+
+    window.removeEventListener(
+      'blur',
+      handleVisibility,
+    );
+
+    if (activeOverlayCleanup) {
+      activeOverlayCleanup();
+    }
+
+    if (
+      window.__screenTimeVideoAPI ===
+      api
+    ) {
+      delete window.__screenTimeVideoAPI;
+    }
+
+    cleanupInstance = null;
+  };
+
+  cleanupInstance =
+    cleanup;
+
+  return cleanup;
 }
